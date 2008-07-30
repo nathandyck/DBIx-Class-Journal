@@ -20,7 +20,6 @@ __PACKAGE__->add_columns(
                          set_date => {
                              data_type => 'timestamp',
                              is_nullable => 0,
-                             default_value => 'now()',
                          },
                          session_id => {
                              data_type => 'varchar',
@@ -28,6 +27,12 @@ __PACKAGE__->add_columns(
                              is_nullable => 1,
                          },
                          );
+
+sub new {
+    my $self = shift->next::method(@_);
+    $self->set_date(gmtime); # DateTime->now);
+    return $self;
+}
 
 __PACKAGE__->set_primary_key('ID');
 

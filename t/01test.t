@@ -10,7 +10,7 @@ BEGIN {
     eval "use DBD::SQLite";
     plan $@
         ? ( skip_all => 'needs DBD::SQLite for testing' )
-        : ( tests => 12 );
+        : ( tests => 16 );
 }
 
 my $schema = DBICTest->init_schema(no_populate => 1);
@@ -22,16 +22,27 @@ isa_ok($schema->_journal_schema->source('ArtistAuditLog'), 'DBIx::Class::ResultS
 
 my $artist;
 my $new_cd = $schema->txn_do( sub {
+    my $current_changeset = $schema->_journal_schema->_current_changeset;
+    ok( $current_changeset, "have a current changeset" );
+
     $artist = $schema->resultset('Artist')->create({
         name => 'Fred Bloggs',
     });
-    return  $schema->resultset('CD')->create({
-        title => 'Angry young man',
-        artist => $artist,
-        year => 2000,
+
+    $schema->txn_do(sub {
+        is( $current_changeset, $schema->_journal_schema->_current_changeset, "nested txn doesn't create a new changeset" );
+        return $schema->resultset('CD')->create({
+            title => 'Angry young man',
+            artist => $artist,
+            year => 2000,
+        });
     });
 });
 isa_ok($new_cd, 'DBIx::Class::Journal', 'Created CD object');
+
+is( $schema->_journal_schema->_current_changeset, undef, "no current changeset" );
+eval { $schema->_journal_schema->current_changeset };
+ok( $@, "causes error" );
 
 my $search = $schema->_journal_schema->resultset('CDAuditLog')->search();
 ok($search->count, 'Created an entry in the CD audit log');
@@ -57,7 +68,7 @@ $schema->txn_do( sub {
     $new_cd->delete;
 } );
 
-my $alentry = $search->find({ ID => $new_cd->get_column($new_cd->primary_columns) });
+my $alentry = $search->find({ map { $_ => $new_cd->get_column($_) } $new_cd->primary_columns });
 ok(defined($alentry->deleted), 'Deleted set in audit_log');
 
 $schema->changeset_user(1);

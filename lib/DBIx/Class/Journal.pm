@@ -5,7 +5,7 @@ use base qw/DBIx::Class/;
 use strict;
 use warnings;
 
-our $VERSION = '0.01';
+our $VERSION = '0.02_01';
 
 ## On create/insert, add new entry to AuditLog
 
@@ -29,17 +29,9 @@ sub insert
     {
         my $s_name = $self->result_source->source_name();
         my $al = $self->result_source->schema->_journal_schema->resultset("${s_name}AuditLog");
-        my ($pri, $too_many) = map { $self->get_column($_)} $self->primary_columns;
-        if(defined $pri && defined $too_many) 
-        {
-            $self->throw_exception( "More than one possible key found for auto-inc on ".ref $self );
-        }
-        $pri ||= \'NULL';   #'
-        $al->create({
-            ID => $pri,
-#            created => {
-#                changeset => $self->result_source->schema->_journal_schema->current_changeset(),
-#            },
+        $al->update_or_create({
+            ( map { $_ => $self->get_column($_)} $self->primary_columns ),
+            created => { changeset_id => $al->result_source->schema->current_changeset },
         });
     }
 
@@ -57,22 +49,12 @@ sub delete
     {
         my $s_name = $self->result_source->source_name();
         my $al = $self->result_source->schema->_journal_schema->resultset("${s_name}AuditLog");
-        my ($pri, $too_many) = map { $self->get_column($_)} $self->primary_columns;
-        if(defined $pri && defined $too_many) 
-        {
-            $self->throw_exception( "More than one possible key found for auto-inc on ".ref $self );
-        }
-
-        if($pri)
-        {
-            my $alentry = $al->find({ID => $pri});
-            $self->throw_exception( "No audit_log entry found for ".ref($self) . " item $pri" ) if(!$alentry);
-             
-            ## bulk_update doesnt do "create new item on update of rel-accessor with hashref, yet
-            my $change = $self->result_source->schema->_journal_schema->resultset('Change')->create({ changeset_id => $self->result_source->schema->_journal_schema->current_changeset });
-            $alentry->delete_id($change->ID);
-            $alentry->update();
-        }
+        my $alentry = $al->find_or_create({ map { $_ => $self->get_column($_)} $self->primary_columns });
+         
+        ## bulk_update doesnt do "create new item on update of rel-accessor with hashref, yet
+        my $change = $self->result_source->schema->_journal_schema->resultset('ChangeLog')->create({ changeset_id => $self->result_source->schema->_journal_schema->current_changeset });
+        $alentry->delete_id($change->id);
+        $alentry->update();
     }
     
 }
@@ -90,8 +72,9 @@ sub update
 
         my $obj = $self->result_source->resultset->find( $self->ident_condition );
         $ah->create({
-            $obj->get_columns
-            });
+            $obj->get_columns,
+            change => { changeset_id => $ah->result_source->schema->current_changeset },
+        });
     }
 
     $self->next::method($upd, @rest);
@@ -153,10 +136,10 @@ session_id, and a set_date which defaults to the current datetime.
 
 A ChangeSet has_many Changes.
 
-=item Change
+=item ChangeLog
 
 Each change/operation done in the transaction is recorded as a row in
-the Change table. It contains an auto-incrementing ID, the
+the ChangeLog table. It contains an auto-incrementing ID, the
 changeset_id and an order column for the ordering of each change in
 the changeset.
 
@@ -173,7 +156,7 @@ created or deleted this row.
 
 For every table in the original database to be audited, an
 AuditHistory table is created. Each row has a change_id field
-containing the ID of the Change row. The other fields correspond to
+containing the ID of the ChangeLog row. The other fields correspond to
 all the fields from the original table. Each time a column value in
 the original table is changed, the entire row contents before the
 change are added as a new row in this table.
@@ -184,23 +167,16 @@ change are added as a new row in this table.
 
 =over
 
-=item journal_connection
-
-=item Arguments: \@connect_info
-
-=back
+=item journal_connection \@connect_info
 
 Set the connection information for the database to save your audit
-information to. Leaving this blank assumes you want to store the audit
-data into your current database.
+information to.
 
-=over
+Leaving this blank assumes you want to store the audit data into your current
+database. The storage object will be shared by the regular schema and the
+journalling schema.
 
-=item journal_sources
-
-=item Arguments: \@source_names
-
-=back
+=item journal_sources \@source_names
 
 Set a list of source names you would like to audit, if unset, all
 sources are used.
@@ -208,61 +184,42 @@ sources are used.
 NOTE: Currently only sources with a single-column PK are supported, so
 use this method if you have sources with multi-column PKs.
 
-=over
-
-=item journal_storage_type
-
-=item Arguments: $storage_type
-
-=back
+=item journal_storage_type $type
 
 Enter the special storage type of your journal schema if needed. See
 L<DBIx::Class::Storage::DBI> for more information on storage types.
 
-=over
-
-=item journal_user
-
-=item Arguments: \@relation_args
-
-=back
+=item journal_user \@rel
 
 The user_id column in the L</ChangeSet> will be linked to your user id
 with a belongs_to relation, if this is set with the appropriate
 arguments.
 
-=over
+=item journal_deploy_on_connect $bool
 
-=item changeset_user
+If set to a true value will cause C<journal_schema_deploy> to be called on
+C<connect>.
 
-=item Arguments: $user_id
+Not reccomended, but present for backwards compatibility.
 
-=back
+=item changeset_user $user_id
 
 Set the user_id for the following changeset(s). This must be an integer.
 
-=over
-
-=item changeset_session
-
-=item Arguments: $user_id
-
-=back
+=item changeset_session $session_id
 
 Set the session_id for the following changeset(s). This must be an integer.
 
-=over
-
-=item txn_do
-
-=iitem Arguments: $code_ref
-
-=back
+=item txn_do $code_ref, @args
 
 Overloaded L<DBIx::Class::Schema/txn_do>, this must be used to start a
 new changeset to cover a group of changes. Each subsequent change to
 an audited table will use the changeset_id created in the most recent
 txn_do call.
+
+Currently nested C<txn_do> calls cause a single ChangeSet object to be created.
+
+=back
 
 =head1 SEE ALSO
 

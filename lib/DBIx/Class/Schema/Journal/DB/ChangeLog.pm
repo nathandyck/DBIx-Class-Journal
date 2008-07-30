@@ -1,10 +1,10 @@
-package DBIx::Class::Schema::Journal::DB::Change;
+package DBIx::Class::Schema::Journal::DB::ChangeLog;
 
 use base 'DBIx::Class';
 
 # __PACKAGE__->load_components(qw/Core/);
 __PACKAGE__->load_components(qw/Ordered Core/);
-__PACKAGE__->table('change');
+__PACKAGE__->table('changelog');
 
 __PACKAGE__->add_columns(
                          ID => {
